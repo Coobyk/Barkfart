@@ -81,12 +81,13 @@ app.innerHTML = `
         <button type="button" class="secondary" id="stop" disabled>■ Stop</button>
         <span class="time" id="time">0:00 / 0:00</span>
       </div>
+      <p class="hint">Doesn't work? Try downloading and playing the downloaded file!</p>
     </div>
   </section>
 
   <section class="card">
     <h2>4. Download</h2>
-    <p class="hint">Mixes in your browser (no upload). MP3 is mono 22&nbsp;kHz for speed; WAV is instant after mix.</p>
+    <p class="hint">Mixes in your browser (no upload). MP3 is most common. WAV has higher quality.</p>
     <div class="controls" style="margin-top: 0.85rem">
       <button type="button" id="download" disabled>⬇ Download MP3</button>
       <button type="button" class="secondary" id="downloadWav" disabled>⬇ Download WAV</button>

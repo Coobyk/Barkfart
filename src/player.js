@@ -1,5 +1,5 @@
 import { Midi } from '@tonejs/midi'
-import { createSampleBanks, playBuffer } from './sounds.js'
+import { createSampleBanks } from './sounds.js'
 import { renderMix, EXPORT_SAMPLE_RATE } from './exportAudio.js'
 
 /** @typedef {'auto' | 'bark' | 'fart' | 'alternate'} SoundMode */
@@ -12,7 +12,7 @@ export class BarkfartPlayer {
     this.banks = null
     /** @type {Midi | null} */
     this.midi = null
-    /** @type {{ time: number, duration: number, midi: number, velocity: number, track: number }[]} */
+    /** @type {{ time: number, duration: number, midi: number, velocity: number, midiGain: number, track: number }[]} */
     this.notes = []
     this.duration = 0
     this.playing = false
@@ -20,6 +20,8 @@ export class BarkfartPlayer {
     this.pauseOffset = 0
     /** @type {AudioBufferSourceNode[]} */
     this.activeSources = []
+    /** @type {GainNode | null} */
+    this.outputGain = null
     /** @type {number | null} */
     this.raf = null
     /** @type {((t: number, dur: number) => void) | null} */
@@ -28,7 +30,7 @@ export class BarkfartPlayer {
     this.onEnded = null
     /** @type {SoundMode} */
     this.mode = 'auto'
-    this.volume = 0.85
+    this.volume = 1
     this.tempoScale = 1
     /** MIDI note where LH (fart) ends and RH (bark) begins. Default: middle C. */
     this.splitMidi = 60
@@ -41,10 +43,20 @@ export class BarkfartPlayer {
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume()
     }
+    if (!this.outputGain) {
+      this.outputGain = this.ctx.createGain()
+      this.outputGain.gain.value = this.volume
+      this.outputGain.connect(this.ctx.destination)
+    }
     if (!this.banks) {
       this.banks = await createSampleBanks(this.ctx, 8)
     }
     return this.ctx
+  }
+
+  setVolume(volume) {
+    this.volume = Math.max(0, Math.min(1, volume))
+    if (this.outputGain) this.outputGain.gain.value = this.volume
   }
 
   /**
@@ -57,12 +69,28 @@ export class BarkfartPlayer {
     let maxEnd = 0
 
     this.midi.tracks.forEach((track, trackIndex) => {
+      // CC7 is channel volume and CC11 is expression. Use the most recent
+      // controller values at each note-on time, just as a MIDI instrument does.
+      const channelVolumes = track.controlChanges[7] || []
+      const expressions = track.controlChanges[11] || []
+      let volumeIndex = 0
+      let expressionIndex = 0
+      let channelVolume = 1
+      let expression = 1
+
       for (const note of track.notes) {
+        while (channelVolumes[volumeIndex]?.time <= note.time) {
+          channelVolume = channelVolumes[volumeIndex++].value
+        }
+        while (expressions[expressionIndex]?.time <= note.time) {
+          expression = expressions[expressionIndex++].value
+        }
         this.notes.push({
           time: note.time,
           duration: note.duration,
           midi: note.midi,
           velocity: note.velocity,
+          midiGain: channelVolume * expression,
           track: trackIndex,
         })
         maxEnd = Math.max(maxEnd, note.time + Math.max(note.duration, 0.05))
@@ -116,36 +144,6 @@ export class BarkfartPlayer {
     return Math.pow(2, (midi - center) / 12)
   }
 
-  /**
-   * Schedule notes from `fromTime` (song seconds) onward.
-   */
-  scheduleFrom(fromTime) {
-    if (!this.ctx || !this.banks) return
-    const ctxNow = this.ctx.currentTime
-    const lookAheadEnd = this.duration + 1
-
-    this.notes.forEach((note, index) => {
-      if (note.time < fromTime - 0.001) return
-      if (note.time > lookAheadEnd) return
-
-      const when = ctxNow + (note.time - fromTime) / this.tempoScale
-      const kind = this.pickKind(note, index)
-      // Always the same sample per kind — pitch comes only from playback rate
-      const sample = kind === 'bark' ? this.banks.barks[0] : this.banks.farts[0]
-      const rate = this.rateForNote(note.midi, kind)
-      // Slight pan by pitch for stereo interest
-      const pan = ((note.midi - 60) / 40) * 0.55
-      const gain = this.volume * (0.35 + note.velocity * 0.65)
-
-      const src = playBuffer(this.ctx, sample, when, { rate, gain, pan })
-      this.activeSources.push(src)
-      src.onended = () => {
-        const i = this.activeSources.indexOf(src)
-        if (i >= 0) this.activeSources.splice(i, 1)
-      }
-    })
-  }
-
   clearSources() {
     for (const src of this.activeSources) {
       try {
@@ -159,12 +157,21 @@ export class BarkfartPlayer {
 
   async play() {
     await this.ensureContext()
-    if (!this.notes.length) return
+    if (!this.notes.length || !this.ctx) return
 
     this.clearSources()
+    // Volume is applied by the master gain so the slider works immediately.
+    const samples = await this.renderMix(undefined, 1)
+    const buffer = this.ctx.createBuffer(1, samples.length, EXPORT_SAMPLE_RATE)
+    buffer.copyToChannel(samples, 0)
+
+    const src = this.ctx.createBufferSource()
+    src.buffer = buffer
+    src.connect(this.outputGain)
+    src.start(this.ctx.currentTime, this.pauseOffset / this.tempoScale)
+    this.activeSources.push(src)
     this.playing = true
     this.startTime = this.ctx.currentTime
-    this.scheduleFrom(this.pauseOffset)
     this.tick()
   }
 
@@ -227,6 +234,17 @@ export class BarkfartPlayer {
   async renderForExport(onProgress) {
     if (!this.notes.length) throw new Error('No MIDI loaded')
     await this.ensureContext()
+    return this.renderMix(onProgress)
+  }
+
+  /**
+   * Render one complete mix for both downloads and browser playback. Playing
+   * one buffer avoids dropping early notes while many Web Audio sources are
+   * being created for dense MIDI files.
+   * @param {(pct: number) => void} [onProgress]
+   * @returns {Promise<Float32Array>}
+   */
+  async renderMix(onProgress, volume = this.volume) {
     if (!this.banks) throw new Error('Samples not loaded')
 
     return renderMix({
@@ -235,7 +253,7 @@ export class BarkfartPlayer {
       pickKind: (note, index) => this.pickKind(note, index),
       rateForNote: (midi, kind) => this.rateForNote(midi, kind),
       durationSec: this.duration,
-      volume: this.volume,
+      volume,
       tempoScale: this.tempoScale,
       sampleRate: EXPORT_SAMPLE_RATE,
       onProgress,

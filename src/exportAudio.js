@@ -8,7 +8,7 @@ export const EXPORT_SAMPLE_RATE = 22050
  * Much faster / more reliable than OfflineAudioContext with thousands of nodes.
  *
  * @param {object} opts
- * @param {{ time: number, midi: number, velocity: number, track: number }[]} opts.notes
+ * @param {{ time: number, midi: number, velocity: number, midiGain?: number, track: number }[]} opts.notes
  * @param {{ barks: AudioBuffer[], farts: AudioBuffer[] }} opts.banks
  * @param {(note: object, index: number) => 'bark' | 'fart'} opts.pickKind
  * @param {(midi: number, kind: string) => number} opts.rateForNote
@@ -25,7 +25,7 @@ export async function renderMix({
   pickKind,
   rateForNote,
   durationSec,
-  volume,
+  volume = 1,
   tempoScale = 1,
   sampleRate = EXPORT_SAMPLE_RATE,
   onProgress,
@@ -62,7 +62,7 @@ export async function renderMix({
     // Same sample every time for a given kind (consistent bark vs fart)
     const sample = kind === 'bark' ? banks.barks[0] : banks.farts[0]
     const rate = Math.max(0.001, rateForNote(note.midi, kind))
-    const gain = volume * (0.35 + note.velocity * 0.65)
+    const gain = (0.35 + note.velocity * 0.65) * (note.midiGain ?? 1)
     const when = note.time / tempoScale
     const src = monoOf(sample)
     // Adjust for sample's native rate vs export rate
@@ -87,6 +87,11 @@ export async function renderMix({
   }
   if (peak > 0.001) {
     const g = 0.95 / peak
+    for (let i = 0; i < length; i++) out[i] *= g
+  }
+  // Apply volume after normalizing so quieter exports stay quieter.
+  if (volume !== 1) {
+    const g = Math.max(0, Math.min(1, volume))
     for (let i = 0; i < length; i++) out[i] *= g
   }
 

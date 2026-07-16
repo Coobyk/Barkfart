@@ -62,8 +62,8 @@ app.innerHTML = `
       <div class="field">
         <label for="volume">Volume</label>
         <div class="slider-row">
-          <input type="range" id="volume" min="0" max="100" value="85" />
-          <span class="val" id="volumeVal">85%</span>
+          <input type="range" id="volume" min="0" max="100" value="100" />
+          <span class="val" id="volumeVal">100%</span>
         </div>
       </div>
     </div>
@@ -274,7 +274,7 @@ splitMidiEl.addEventListener('input', () => {
 volumeEl.addEventListener('input', () => {
   const v = Number(volumeEl.value)
   document.getElementById('volumeVal').textContent = `${v}%`
-  player.volume = v / 100
+  player.setVolume(v / 100)
 })
 
 // Transport

@@ -71,6 +71,14 @@ export class BarkfartPlayer {
 
     // Stable chronological order
     this.notes.sort((a, b) => a.time - b.time || a.midi - b.midi)
+    // MIDI files can contain a silent lead-in before their first note. The
+    // transport should begin when the music does, while keeping every note's
+    // spacing intact.
+    const firstNoteTime = this.notes[0]?.time ?? 0
+    if (firstNoteTime > 0) {
+      for (const note of this.notes) note.time -= firstNoteTime
+      maxEnd -= firstNoteTime
+    }
     this.duration = maxEnd + 0.4
     this.pauseOffset = 0
     return {
